@@ -529,6 +529,7 @@
     <div class="card">
       <div class="row"><span class="k" style="flex:0 0 auto">Script URL</span><input id="fGasUrl" placeholder="https://script.google.com/…/exec" autocomplete="off" spellcheck="false" aria-label="Apps Script URL" style="font-size:.84375rem"></div>
       <button class="row tappable" id="btnSaveGas"><span class="rmain"><span class="rtitle">Save and sync now</span><span class="rsub">Pulls the sheet, then pushes what's queued</span></span><span style="color:var(--ink2)">›</span></button>
+      <button class="row tappable" id="btnTestGas"><span class="rmain"><span class="rtitle">Test connection</span><span class="rsub" id="testSub">Checks the URL and says what comes back</span></span><span style="color:var(--ink2)">›</span></button>
     </div>
     <p class="hint" id="queueHint"></p>
 
@@ -576,7 +577,7 @@
 (function(){
   "use strict";
 
-  var APP_VERSION = "1.2.0", APP_BUILT = "30 Oct 2026";
+  var APP_VERSION = "1.3.0", APP_BUILT = "30 Oct 2026";
   var K_TX = "spend.v2.tx", K_Q = "spend.v2.queue", K_GAS = "spend.v2.gas", K_CFG = "spend.v2.cfg";
   var K_MIGRATED = "spend.v2.migrated";
   var OLD_TX = "spend_tracker_tx_v1", OLD_GAS = "spend_tracker_gas_url";
@@ -767,6 +768,7 @@
 
   /* ---------- sync ---------- */
   var syncState = "local";
+  var lastSyncError = "";
   function setSync(s){ syncState = s; paintSync(); }
   function paintSync(){
     var cls = "";
@@ -782,7 +784,7 @@
     else if (!navigator.onLine) msg = "Offline. Changes are queued and push when you reconnect.";
     else if (queue.length) msg = queue.length + " change" + (queue.length === 1 ? "" : "s") + " saved here — tap \u21BB to sync.";
     else if (syncState === "ok") msg = "Up to date with your Google Sheet.";
-    else if (syncState === "err") msg = "Could not reach your script. Everything is saved on this phone.";
+    else if (syncState === "err") msg = lastSyncError || "Could not reach your script. Everything is saved on this phone.";
     else msg = "Not synced yet — tap the \u21BB button to sync.";
     hint.textContent = msg;
   }
@@ -805,15 +807,74 @@
     }
     setSync("ok");
   }
-  async function pull(){
-    if (!gasUrl || !navigator.onLine) return null;
-    try {
-      var res = await fetch(gasUrl, { cache: "no-store" });
-      var json = await res.json();
-      if (json && json.status === "ok" && Array.isArray(json.data)) return mergeRemote(json.data);
-      return null;
-    } catch (e) { return null; }
+  function jsonp(url, timeoutMs){
+    return new Promise(function(resolve, reject){
+      var name = "__mwcb" + Math.floor(Math.random() * 1e9);
+      var script = document.createElement("script");
+      var settled = false;
+      var timer = setTimeout(function(){
+        if (settled) return;
+        settled = true; cleanup(); reject(new Error("timeout"));
+      }, timeoutMs || 12000);
+      function cleanup(){
+        clearTimeout(timer);
+        try { delete window[name]; } catch (e) { window[name] = undefined; }
+        if (script.parentNode) script.parentNode.removeChild(script);
+      }
+      window[name] = function(data){
+        if (settled) return;
+        settled = true; cleanup(); resolve(data);
+      };
+      script.onerror = function(){
+        if (settled) return;
+        settled = true; cleanup(); reject(new Error("script"));
+      };
+      script.src = url + (url.indexOf("?") < 0 ? "?" : "&") + "callback=" + name + "&_=" + Date.now();
+      document.head.appendChild(script);
+    });
   }
+  async function pull(){
+    if (!gasUrl) return { ok: false, err: "nourl" };
+    if (!navigator.onLine) return { ok: false, err: "offline" };
+    var res, text;
+    try {
+      res = await fetch(gasUrl, { cache: "no-store" });
+      text = await res.text();
+    } catch (e) {
+      /* fetch is blocked cross-origin — fall back to JSONP, which the browser
+         loads as a script and therefore doesn't CORS-check */
+      try {
+        var d = await jsonp(gasUrl);
+        if (d && d.status === "ok" && Array.isArray(d.data)) {
+          var m = mergeRemote(d.data); m.ok = true; return m;
+        }
+        return { ok: false, err: "badjson", message: (d && d.message) || "" };
+      } catch (e2) {
+        return { ok: false, err: "fetch" };
+      }
+    }
+    if (/^\s*</.test(text)) return { ok: false, err: "html", status: res.status };
+    var json = null;
+    try { json = JSON.parse(text); } catch (e) {}
+    if (!json) return { ok: false, err: "notjson", sample: String(text).slice(0, 60) };
+    if (json.status !== "ok" || !Array.isArray(json.data)) {
+      return { ok: false, err: "badjson", message: json.message || "" };
+    }
+    var merged = mergeRemote(json.data);
+    merged.ok = true;
+    return merged;
+  }
+  function pullErrorText(r){
+    if (!r) return "Something went wrong.";
+    if (r.err === "fetch") return "Could not reach the script. Check the URL ends in /exec and access is Anyone.";
+    if (r.err === "html") return "The script sent a web page back (HTTP " + r.status + "), not data. Its access is probably not \u201CAnyone\u201D, or the URL is a /dev one.";
+    if (r.err === "notjson") return "The script replied with something that isn't JSON.";
+    if (r.err === "badjson") return "The script reported an error" + (r.message ? ": " + r.message : ".");
+    if (r.err === "offline") return "You're offline \u2014 nothing was sent.";
+    if (r.err === "nourl") return "No script URL saved yet.";
+    return "Sync failed.";
+  }
+
   function mergeRemote(rows){
     var pending = {};
     queue.forEach(function(q){ if (q.tx && q.tx.id) pending[q.tx.id] = true; });
@@ -851,8 +912,14 @@
     if (!gasUrl || !navigator.onLine) { paintSync(); return; }
     setSync("busy");
     var res = await pull();
-    if (res) { setSync("ok"); if (res.added) toast(res.added + " new from the sheet"); }
-    else setSync("err");
+    if (res && res.ok) {
+      lastSyncError = "";
+      setSync("ok");
+      if (res.added) toast(res.added + " new from the sheet");
+    } else {
+      lastSyncError = pullErrorText(res);
+      setSync("err");
+    }
   }
   async function syncNow(){
     if (!gasUrl) { toast("No backend set up yet — data is on this phone"); openMenu(); return; }
@@ -868,7 +935,12 @@
       return;
     }
     var res = await pull();
-    if (!res) { setSync("err"); toast("Could not read the sheet — check the script URL"); return; }
+    if (!res || !res.ok) {
+      lastSyncError = pullErrorText(res);
+      setSync("err");
+      toast(lastSyncError);
+      return;
+    }
     var missing = toVerify.filter(function(t){ return !res.ids[t.id] && !res.sigs[sigOf(t)]; });
     if (missing.length) {
       missing.forEach(function(t){
@@ -1676,6 +1748,45 @@
     reader.readAsText(file);
   }
 
+  /* ---------- connection test ---------- */
+  async function testGas(){
+    var url = $("fGasUrl").value.trim();
+    var out = $("testSub");
+    if (!url) { out.textContent = "Paste the script URL above first."; return; }
+    if (!/\/exec$/.test(url) && !/\/dev$/.test(url)) {
+      out.textContent = "That doesn't end in /exec \u2014 copy the Web app URL, not the deployment ID.";
+      return;
+    }
+    out.textContent = "Checking\u2026";
+    var res = await fetch(url, { cache: "no-store" }).then(function(r){
+      return r.text().then(function(t){ return { r: r, t: t }; });
+    }).catch(function(){ return null; });
+    if (!res) {
+      try {
+        var jp = await jsonp(url);
+        out.textContent = jp && jp.status === "ok"
+          ? "Working via the script fallback \u2014 " + (jp.count != null ? jp.count : (jp.data || []).length) + " row(s). Sync will use this route."
+          : "Reached the script but it replied: " + ((jp && jp.message) || "unexpected data");
+        return;
+      } catch (e) {
+        out.textContent = "Could not reach it. Check the URL ends in /exec, that access is \u201CAnyone\u201D, and that the script has the JSONP lines in doGet.";
+        return;
+      }
+    }
+    if (/^\s*</.test(res.t)) {
+      out.textContent = "It answered with a web page (HTTP " + res.r.status + "). Set access to \u201CAnyone\u201D and use the /exec URL.";
+      return;
+    }
+    var j = null;
+    try { j = JSON.parse(res.t); } catch (e) {}
+    if (!j) { out.textContent = "Replied with non-JSON: " + res.t.slice(0, 50); return; }
+    if (j.status === "ok") {
+      out.textContent = "Working \u2014 " + (j.count != null ? j.count : (j.data || []).length) + " row(s) in the sheet.";
+      return;
+    }
+    out.textContent = "Script replied: " + (j.message || j.status || "unknown error");
+  }
+
   /* ---------- recurring sheet ---------- */
   function openRecSheet(existing){
     recEditId = existing ? existing.id : null;
@@ -2106,6 +2217,7 @@
       if (found) openRecSheet(found);
     });
     $("rAmount").addEventListener("input", function(){ sizeInput(this); });
+    $("btnTestGas").onclick = testGas;
     $("rFreq").onchange = paintFreqRows;
     $("rSave").onclick = saveRec;
     $("rCancel").onclick = function(){ $("recWrap").hidden = true; };

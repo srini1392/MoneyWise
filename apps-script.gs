@@ -49,7 +49,9 @@ function out_(obj) {
     .setMimeType(ContentService.MimeType.JSON);
 }
 
-function doGet() {
+function doGet(e) {
+  var cb = (e && e.parameter && e.parameter.callback) || "";
+  var payload;
   try {
     var sh = sheet_();
     var last = sh.getLastRow();
@@ -70,10 +72,19 @@ function doGet() {
         });
       }
     }
-    return out_({ status: 'ok', count: data.length, data: data });
+    payload = { status: 'ok', count: data.length, data: data };
   } catch (err) {
-    return out_({ status: 'error', message: String(err) });
+    payload = { status: 'error', message: String(err) };
   }
+
+  // JSONP: lets a page read this even when the browser blocks the cross-origin
+  // fetch. Only a safe callback name is echoed back.
+  if (cb && /^[A-Za-z_$][A-Za-z0-9_$]{0,60}$/.test(cb)) {
+    return ContentService
+      .createTextOutput(cb + "(" + JSON.stringify(payload) + ");")
+      .setMimeType(ContentService.MimeType.JAVASCRIPT);
+  }
+  return out_(payload);
 }
 
 function doPost(e) {
