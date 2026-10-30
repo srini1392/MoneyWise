@@ -26,12 +26,19 @@
  */
 
 var SHEET_NAME = 'Spending';
-var HEADERS = ['Date', 'Category', 'Description', 'Payment Mode', 'Amount', 'Id', 'Created'];
+var HEADERS = ['Date', 'Category', 'Description', 'Payment Mode', 'Amount', 'Id', 'Created', 'Type'];
 
 function sheet_() {
   var ss = SpreadsheetApp.getActiveSpreadsheet();
   var sh = ss.getSheetByName(SHEET_NAME);
   if (!sh) sh = ss.insertSheet(SHEET_NAME);
+  if (sh.getLastRow() > 0) {
+    var have = sh.getLastColumn();
+    if (have < HEADERS.length) {
+      sh.getRange(1, have + 1, 1, HEADERS.length - have).setValues([HEADERS.slice(have)]);
+      sh.getRange(1, 1, 1, HEADERS.length).setFontWeight('bold');
+    }
+  }
   if (sh.getLastRow() === 0) {
     sh.appendRow(HEADERS);
     sh.setFrozenRows(1);
@@ -68,7 +75,8 @@ function doGet(e) {
           description: String(r[2] || ''),
           paymentMode: String(r[3] || ''),
           amount: Number(r[4]) || 0,
-          id: String(r[5] || '')
+          id: String(r[5] || ''),
+          type: String(r[7] || 'expense')
         });
       }
     }
@@ -120,7 +128,7 @@ function appendRow_(sh, b) {
     if (existing) return { status: 'ok', action: 'skipped', reason: 'duplicate id', rowId: existing };
   }
 
-  sh.appendRow([date, b.category || 'Misc', b.description || '', b.paymentMode || '', amount, id, new Date()]);
+  sh.appendRow([date, b.category || 'Misc', b.description || '', b.paymentMode || '', amount, id, new Date(), b.type || 'expense']);
   return { status: 'ok', action: 'appended', rowId: sh.getLastRow() };
 }
 
@@ -129,8 +137,9 @@ function replaceRow_(sh, b) {
   if (!row || row < 2 || row > sh.getLastRow()) return { status: 'error', message: 'bad rowId' };
   var date = isoDate_(b.date);
   if (!date) return { status: 'error', message: 'bad date' };
-  sh.getRange(row, 1, 1, 6).setValues([[
-    date, b.category || 'Misc', b.description || '', b.paymentMode || '', Number(b.amount) || 0, String(b.id || '')
+  sh.getRange(row, 1, 1, 8).setValues([[
+    date, b.category || 'Misc', b.description || '', b.paymentMode || '', Number(b.amount) || 0,
+    String(b.id || ''), new Date(), b.type || 'expense'
   ]]);
   return { status: 'ok', action: 'updated', rowId: row };
 }
