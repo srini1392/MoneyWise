@@ -1,10 +1,10 @@
-# Spending
+# MoneyWise
 
 A private, offline-first expense tracker that installs to your phone's home
 screen. No ads, no accounts, no analytics. Data lives on the device and,
 optionally, in a Google Sheet you own.
 
-**Current version: 1.0.0** — shown at the foot of the app's Settings screen, so
+**Current version: 1.1.0** — shown at the foot of the app's Settings screen, so
 you can always confirm which build is live.
 
 ## Files
