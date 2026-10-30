@@ -1,7 +1,7 @@
 {
-  "name": "Spending",
-  "short_name": "Spending",
-  "description": "A private, offline expense tracker. No ads, no accounts, no tracking.",
+  "name": "MoneyWise",
+  "short_name": "MoneyWise",
+  "description": "MoneyWise — a private, offline expense tracker. No ads, no accounts, no tracking.",
   "start_url": "./",
   "scope": "./",
   "display": "standalone",

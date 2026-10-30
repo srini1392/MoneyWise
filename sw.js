@@ -1,5 +1,5 @@
 /* Spending — offline shell. Bump CACHE when you change index.html. */
-var CACHE = "spending-v9";
+var CACHE = "moneywise-v10";
 
 var ASSETS = [
   "./",

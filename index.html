@@ -5,13 +5,13 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="theme-color" content="#F2F2F7" media="(prefers-color-scheme: light)">
 <meta name="theme-color" content="#000000" media="(prefers-color-scheme: dark)">
-<title>Spending</title>
+<title>MoneyWise</title>
 <link rel="manifest" href="./manifest.json">
 <link rel="icon" href="./icon-192.png" sizes="192x192" type="image/png">
 <link rel="apple-touch-icon" href="./apple-touch-icon.png">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="mobile-web-app-capable" content="yes">
-<meta name="apple-mobile-web-app-title" content="Spending">
+<meta name="apple-mobile-web-app-title" content="MoneyWise">
 <meta name="apple-mobile-web-app-status-bar-style" content="default">
 <meta name="description" content="A private, offline expense tracker. No ads, no accounts.">
 <style>
@@ -298,7 +298,7 @@
 
 <div class="nav">
   <div class="nav-inner">
-    <div class="nav-title"><span class="dot" id="syncDot"></span>Spending</div>
+    <div class="nav-title"><span class="dot" id="syncDot"></span>MoneyWise</div>
     <div class="nav-actions">
       <button class="icon-btn" id="searchBtn" aria-label="Search"><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="m16.5 16.5 4 4"/></svg></button>
       <button class="icon-btn" id="syncBtn" aria-label="Sync with Google Sheet">&#8635;</button>
@@ -549,7 +549,7 @@
 (function(){
   "use strict";
 
-  var APP_VERSION = "1.0.0", APP_BUILT = "30 Oct 2026";
+  var APP_VERSION = "1.1.0", APP_BUILT = "30 Oct 2026";
   var K_TX = "spend.v2.tx", K_Q = "spend.v2.queue", K_GAS = "spend.v2.gas", K_CFG = "spend.v2.cfg";
   var K_MIGRATED = "spend.v2.migrated";
   var OLD_TX = "spend_tracker_tx_v1", OLD_GAS = "spend_tracker_gas_url";
@@ -1121,7 +1121,7 @@
         '" stroke-dashoffset="' + off.toFixed(2) + '" transform="rotate(-90 80 80)" style="--d:' + i + '">' +
         '<title>' + esc(sg.cat) + ': ' + money(round2(sg.amt)) + ' (' + sg.pct + '%)</title></circle>';
     });
-    $("donutSvg").innerHTML = '<svg class="donut" viewBox="0 0 160 160" role="img" aria-label="Spending by category">' +
+    $("donutSvg").innerHTML = '<svg class="donut" viewBox="0 0 160 160" role="img" aria-label="MoneyWise — spending by category">' +
       (svg || '<circle cx="80" cy="80" r="' + R + '" fill="none" stroke="var(--fill)" stroke-width="' + SW + '"></circle>') + '</svg>';
 
     var act = null;
@@ -1539,7 +1539,7 @@
     paintBadgeToggle();
     $("newRuleCat").innerHTML = catNames(false).map(function(c){ return '<option value="' + esc(c) + '">' + esc(c) + '</option>'; }).join("");
     $("exportMonthSub").textContent = monthLabel(month);
-    $("versionLine").textContent = "Spending v" + APP_VERSION + " \u00B7 built " + APP_BUILT;
+    $("versionLine").textContent = "MoneyWise v" + APP_VERSION + " \u00B7 built " + APP_BUILT;
     $("menuWrap").hidden = false;
   }
   function closeMenu(){ $("menuWrap").hidden = true; }
