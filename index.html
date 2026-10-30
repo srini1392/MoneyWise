@@ -54,7 +54,8 @@
   .dot{width:8px;height:8px;border-radius:50%;background:var(--ink3);flex:0 0 auto}
   .dot.ok{background:var(--green)} .dot.busy{background:var(--orange)} .dot.err{background:var(--red)}
   .nav-actions{display:flex;gap:8px}
-  .icon-btn{width:36px;height:36px;border-radius:50%;display:grid;place-items:center;background:var(--fill);color:var(--tint);font-size:1.0625rem;font-weight:600}
+  .icon-btn{width:36px;height:36px;border-radius:50%;display:grid;place-items:center;background:var(--fill);color:var(--tint);font-size:1.0625rem;font-weight:600;position:relative}
+  .icon-btn.has-badge::after{content:attr(data-badge);position:absolute;top:-3px;right:-3px;min-width:17px;height:17px;border-radius:99px;background:var(--red);color:#fff;font-size:.625rem;font-weight:700;display:grid;place-items:center;padding:0 4px;box-shadow:0 0 0 2px var(--bg);line-height:1}
   .icon-btn:active{background:var(--fill2)}
   .icon-btn svg{width:19px;height:19px;stroke:currentColor;fill:none;stroke-width:2;stroke-linecap:round}
   .searchbar{max-width:600px;margin:0 auto;padding:0 16px 10px;display:flex;gap:8px;align-items:center}
@@ -577,7 +578,7 @@
 (function(){
   "use strict";
 
-  var APP_VERSION = "1.3.0", APP_BUILT = "30 Oct 2026";
+  var APP_VERSION = "1.4.2", APP_BUILT = "30 Oct 2026";
   var K_TX = "spend.v2.tx", K_Q = "spend.v2.queue", K_GAS = "spend.v2.gas", K_CFG = "spend.v2.cfg";
   var K_MIGRATED = "spend.v2.migrated";
   var OLD_TX = "spend_tracker_tx_v1", OLD_GAS = "spend_tracker_gas_url";
@@ -769,6 +770,8 @@
   /* ---------- sync ---------- */
   var syncState = "local";
   var lastSyncError = "";
+  var syncing = false, syncQueued = false;
+  var autoSyncTimer = null;
   function setSync(s){ syncState = s; paintSync(); }
   function paintSync(){
     var cls = "";
@@ -777,6 +780,18 @@
     else if (syncState === "err") cls = "err";
     else if (gasUrl && syncState === "ok") cls = "ok";
     $("syncDot").className = "dot" + (cls ? " " + cls : "");
+    var sb = $("syncBtn");
+    if (sb) {
+      if (queue.length) {
+        sb.classList.add("has-badge");
+        sb.setAttribute("data-badge", queue.length > 9 ? "9+" : String(queue.length));
+        sb.setAttribute("aria-label", queue.length + " change(s) waiting to upload — tap to sync");
+      } else {
+        sb.classList.remove("has-badge");
+        sb.removeAttribute("data-badge");
+        sb.setAttribute("aria-label", "Sync with Google Sheet");
+      }
+    }
     var hint = $("queueHint");
     if (!hint) return;
     var msg;
@@ -879,7 +894,7 @@
     var pending = {};
     queue.forEach(function(q){ if (q.tx && q.tx.id) pending[q.tx.id] = true; });
 
-    var remote = [], remoteIds = {}, remoteSigs = {};
+    var remote = [], remoteIds = {}, remoteSigs = {}, byId = {};
     rows.forEach(function(r){
       if (!r) return;
       var d = normalizeDate(r.date), amt = Number(r.amount);
@@ -897,65 +912,110 @@
       remote.push(item);
       remoteIds[item.id] = true;
       remoteSigs[sigOf(item)] = true;
+      byId[item.id] = item;
     });
 
-    var seen = {};
-    var merged = tx.filter(function(t){ return pending[t.id] || (t.rowId == null && !remoteSigs[sigOf(t)]); });
-    merged.forEach(function(t){ seen[t.id] = true; });
+    var out = [], seen = {}, changed = false;
+    tx.forEach(function(t){
+      var r = byId[t.id];
+      if (pending[t.id]) { out.push(t); seen[t.id] = true; return; }        /* unsent local edit wins */
+      if (r) {                                                              /* otherwise the sheet wins */
+        if (r.date !== t.date || r.amount !== t.amount || r.category !== t.category ||
+            r.description !== t.description || r.paymentMode !== t.paymentMode) changed = true;
+        out.push(r); seen[t.id] = true; return;
+      }
+      if (t.rowId == null && !remoteSigs[sigOf(t)]) { out.push(t); return; } /* never uploaded */
+      changed = true;                                                       /* deleted on the sheet */
+    });
+
     var added = 0;
-    remote.forEach(function(r){ if (!seen[r.id]) { seen[r.id] = true; merged.push(r); added++; } });
-    tx = merged;
-    saveTx(); render();
+    remote.forEach(function(r){
+      if (!seen[r.id]) { seen[r.id] = true; out.push(r); added++; }
+    });
+
+    if (changed || added) { tx = out; saveTx(); render(); }
     return { added: added, ids: remoteIds, sigs: remoteSigs };
   }
+
   async function pullOnly(){
     if (!gasUrl || !navigator.onLine) { paintSync(); return; }
     setSync("busy");
     var res = await pull();
-    if (res && res.ok) {
+    if (res && res.ok) { lastSyncError = ""; setSync("ok"); if (res.added) toast(res.added + " new from the sheet"); }
+    else { lastSyncError = pullErrorText(res); setSync("err"); }
+  }
+
+  /* quiet = true is the background timer: it only speaks up when something happened */
+  async function runSync(quiet){
+    if (!gasUrl) {
+      if (!quiet) { toast("No backend set up yet \u2014 data is on this phone"); openMenu(); }
+      return;
+    }
+    if (!navigator.onLine) {
+      if (!quiet) toast("Offline \u2014 everything is saved on this phone");
+      paintSync();
+      return;
+    }
+    if (syncing) { syncQueued = true; return; }
+    syncing = true;
+    try {
+      setSync("busy");
+      var toVerify = [];
+      queue.forEach(function(q){ if (q.action === "add" && q.tx) toVerify.push(q.tx); });
+      var pushed = queue.length;
+
+      await flushQueue();
+      if (queue.length) {
+        await pull();
+        setSync("err");
+        if (!quiet) toast(queue.length + " change" + (queue.length === 1 ? "" : "s") + " could not upload \u2014 kept on this phone");
+        return;
+      }
+
+      var res = await pull();
+      if (!res || !res.ok) {
+        lastSyncError = pullErrorText(res);
+        setSync("err");
+        if (!quiet) toast(lastSyncError);
+        return;
+      }
+
+      var missing = toVerify.filter(function(t){ return !res.ids[t.id] && !res.sigs[sigOf(t)]; });
+      if (missing.length) {
+        missing.forEach(function(t){
+          var dup = queue.some(function(q){ return q.tx && q.tx.id === t.id; });
+          if (!dup) queue.push({ action: "add", tx: t });
+        });
+        saveQueue();
+        setSync("err");
+        if (!quiet) toast(missing.length + " upload" + (missing.length === 1 ? "" : "s") + " not confirmed \u2014 will retry");
+        return;
+      }
+
       lastSyncError = "";
       setSync("ok");
-      if (res.added) toast(res.added + " new from the sheet");
-    } else {
-      lastSyncError = pullErrorText(res);
-      setSync("err");
+      if (pushed) toast(pushed + " uploaded");
+      else if (res.added) toast(res.added + " new from the sheet");
+      else if (!quiet) toast("Synced \u2014 up to date");
+    } finally {
+      syncing = false;
+      if (syncQueued) {
+        syncQueued = false;
+        setTimeout(function(){ autoSync(); }, 60);
+      }
     }
   }
-  async function syncNow(){
-    if (!gasUrl) { toast("No backend set up yet — data is on this phone"); openMenu(); return; }
-    if (!navigator.onLine) { toast("Offline — everything is saved on this phone"); paintSync(); return; }
-    setSync("busy");
-    var toVerify = [];
-    queue.forEach(function(q){ if (q.action === "add" && q.tx) toVerify.push(q.tx); });
-    var pushed = queue.length;
-    await flushQueue();
-    if (queue.length) {
-      await pull(); setSync("err");
-      toast(queue.length + " change" + (queue.length === 1 ? "" : "s") + " could not upload — kept on this phone");
-      return;
-    }
-    var res = await pull();
-    if (!res || !res.ok) {
-      lastSyncError = pullErrorText(res);
-      setSync("err");
-      toast(lastSyncError);
-      return;
-    }
-    var missing = toVerify.filter(function(t){ return !res.ids[t.id] && !res.sigs[sigOf(t)]; });
-    if (missing.length) {
-      missing.forEach(function(t){
-        var dup = queue.some(function(q){ return q.tx && q.tx.id === t.id; });
-        if (!dup) queue.push({ action: "add", tx: t });
-      });
-      saveQueue(); setSync("err");
-      toast(missing.length + " upload" + (missing.length === 1 ? "" : "s") + " not confirmed — will retry");
-      return;
-    }
-    setSync("ok");
-    var bits = [];
-    if (pushed) bits.push(pushed + " uploaded");
-    if (res.added) bits.push(res.added + " new from sheet");
-    toast(bits.length ? "Synced — " + bits.join(", ") : "Synced — up to date");
+  function syncNow(){ return runSync(false); }
+  function autoSync(){ return runSync(true); }
+
+  /* push and pull every minute while the app is open and on screen */
+  var AUTO_MS = 60000;
+  function startAutoSync(){
+    clearInterval(autoSyncTimer);
+    autoSyncTimer = setInterval(function(){
+      if (!gasUrl || document.hidden || !navigator.onLine) return;
+      autoSync();
+    }, AUTO_MS);
   }
 
   function guessCategory(text){
@@ -1452,10 +1512,10 @@
     $("noteList").innerHTML = Array.from(new Set(tx.map(function(t){ return (t.description || "").trim(); }).filter(Boolean))).slice(0, 40)
       .map(function(d){ return '<option value="' + esc(d) + '">'; }).join("");
     sizeAmount();
-    $("formWrap").hidden = false;
+    openOverlay("formWrap");
     setTimeout(function(){ $("fAmount").focus(); sizeAmount(); }, 120);
   }
-  function closeForm(){ $("formWrap").hidden = true; editId = null; $("calcHint").textContent = ""; }
+  function closeForm(){ closeOverlay("formWrap"); editId = null; $("calcHint").textContent = ""; }
 
   function saveForm(){
     var raw = $("fAmount").value;
@@ -1609,7 +1669,7 @@
   function openMonthPicker(){
     pickerYear = Number(month.slice(0, 4));
     paintPicker();
-    $("monthWrap").hidden = false;
+    openOverlay("monthWrap");
   }
   function paintPicker(){
     $("pyLabel").textContent = pickerYear;
@@ -1627,10 +1687,29 @@
     ctxId = id;
     var t = byId(id);
     if (!t) return;
-    $("ctxWrap").hidden = false;
+    openOverlay("ctxWrap");
   }
 
   /* ---------- settings ---------- */
+  /* ---------- overlays + back button ---------- */
+  var overlayStack = [], ignorePop = 0;
+  function openOverlay(id){
+    var el = $(id);
+    if (!el || !el.hidden) return;
+    el.hidden = false;
+    overlayStack.push(id);
+    try { history.pushState({ ov: id }, ""); } catch (e) {}
+  }
+  function closeOverlay(id){
+    var el = $(id);
+    if (el) el.hidden = true;
+    var i = overlayStack.lastIndexOf(id);
+    if (i >= 0) {
+      overlayStack.splice(i, 1);
+      ignorePop++;
+      try { history.back(); } catch (e) { ignorePop--; }
+    }
+  }
   function openMenu(){
     $("fGasUrl").value = gasUrl;
     paintSync(); paintInstall();
@@ -1639,9 +1718,9 @@
     $("newRuleCat").innerHTML = catNames(false).map(function(c){ return '<option value="' + esc(c) + '">' + esc(c) + '</option>'; }).join("");
     $("exportMonthSub").textContent = monthLabel(month);
     $("versionLine").textContent = "MoneyWise v" + APP_VERSION + " \u00B7 built " + APP_BUILT;
-    $("menuWrap").hidden = false;
+    openOverlay("menuWrap");
   }
-  function closeMenu(){ $("menuWrap").hidden = true; }
+  function closeMenu(){ closeOverlay("menuWrap"); }
 
   function renderCatEditor(){
     $("catEditor").innerHTML = cfg.cats.map(function(c, i){
@@ -1737,12 +1816,17 @@
           var id = r.id || uid();
           if (seen[id]) return;
           seen[id] = true;
-          tx.push({ id: id, date: d, category: r.category || "Misc", description: r.description || "",
-            paymentMode: r.paymentMode || r.mode || "", amount: round2(amt), rowId: r.rowId || null });
+          var imp = { id: id, date: d, category: r.category || "Misc", description: r.description || "",
+            paymentMode: r.paymentMode || r.mode || "", amount: round2(amt), rowId: r.rowId || null };
+          tx.push(imp);
+          /* queue it, so the next sync actually uploads what was imported.
+             The script skips ids it has already seen, so a re-import can't duplicate. */
+          queue.push({ action: "add", tx: imp });
           added++;
         });
-        saveTx(); render();
-        toast(added + " entr" + (added === 1 ? "y" : "ies") + " imported");
+        saveTx(); saveQueue(); render(); paintSync();
+        toast(added + " entr" + (added === 1 ? "y" : "ies") + " imported" + (added && gasUrl ? " \u2014 syncing" : ""));
+        if (added && gasUrl && navigator.onLine) autoSync();
       } catch (e) { toast("That file could not be read"); }
     };
     reader.readAsText(file);
@@ -1804,7 +1888,7 @@
     paintFreqRows();
     $("rDelete").hidden = !existing;
     sizeInput($("rAmount"));
-    $("recWrap").hidden = false;
+    openOverlay("recWrap");
     setTimeout(function(){ $("rAmount").focus(); }, 120);
   }
   function paintFreqRows(){
@@ -1835,7 +1919,7 @@
       item.lastPosted = monthOf(todayYmd());   /* starts from next month */
       cfg.recurring.push(item);
     }
-    saveCfg(); renderRecEditor(); $("recWrap").hidden = true;
+    saveCfg(); renderRecEditor(); closeOverlay("recWrap");
     toast(recEditId ? "Recurring updated" : "Recurring added");
   }
 
@@ -2021,6 +2105,7 @@
     bindList();
 
     if (imported) toast(imported + " expense" + (imported === 1 ? "" : "s") + " imported from the previous version");
+    startAutoSync();
 
     var posted = postRecurring();
     if (posted.length) {
@@ -2030,7 +2115,7 @@
       toast(posted.length + " recurring payment" + (posted.length === 1 ? "" : "s") + " added", true);
     }
     var shared = handleShare();
-    if (gasUrl && !shared) pullOnly();
+    if (gasUrl && !shared) autoSync();
 
     $("prevMonth").onclick = function(){ shiftMonth(-1); };
     $("nextMonth").onclick = function(){ shiftMonth(1); };
@@ -2140,10 +2225,10 @@
     });
     $("toastAct").onclick = undoLast;
 
-    $("ctxEdit").onclick = function(){ var id = ctxId; $("ctxWrap").hidden = true; openForm(byId(id)); };
+    $("ctxEdit").onclick = function(){ var id = ctxId; closeOverlay("ctxWrap"); openForm(byId(id)); };
     $("ctxDup").onclick = function(){
       var src = byId(ctxId);
-      $("ctxWrap").hidden = true;
+      closeOverlay("ctxWrap");
       if (!src) return;
       var rec = { id: uid(), date: todayYmd(), category: src.category, description: src.description,
         paymentMode: src.paymentMode, amount: src.amount, rowId: null };
@@ -2155,11 +2240,11 @@
       lastAction = { type: "add", item: rec };
       toast("Duplicated for today", true);
     };
-    $("ctxDel").onclick = function(){ var id = ctxId; $("ctxWrap").hidden = true; deleteTx(id); };
-    $("ctxCancel").onclick = function(){ $("ctxWrap").hidden = true; };
+    $("ctxDel").onclick = function(){ var id = ctxId; closeOverlay("ctxWrap"); deleteTx(id); };
+    $("ctxCancel").onclick = function(){ closeOverlay("ctxWrap"); };
     $("ctxRec").onclick = function(){
       var src = byId(ctxId);
-      $("ctxWrap").hidden = true;
+      closeOverlay("ctxWrap");
       if (!src) return;
       openRecSheet(null);
       $("rAmount").value = String(src.amount);
@@ -2175,10 +2260,10 @@
       if (!b) return;
       month = b.getAttribute("data-m");
       filter = "All"; activeCat = null;
-      $("monthWrap").hidden = true;
+      closeOverlay("monthWrap");
       render();
     });
-    $("mCancel").onclick = function(){ $("monthWrap").hidden = true; };
+    $("mCancel").onclick = function(){ closeOverlay("monthWrap"); };
 
     $("calGrid").addEventListener("click", function(e){
       var b = e.target.closest(".cd");
@@ -2220,11 +2305,11 @@
     $("btnTestGas").onclick = testGas;
     $("rFreq").onchange = paintFreqRows;
     $("rSave").onclick = saveRec;
-    $("rCancel").onclick = function(){ $("recWrap").hidden = true; };
+    $("rCancel").onclick = function(){ closeOverlay("recWrap"); };
     $("rDelete").onclick = function(){
       if (!recEditId) return;
       cfg.recurring = cfg.recurring.filter(function(r){ return r.id !== recEditId; });
-      saveCfg(); renderRecEditor(); $("recWrap").hidden = true;
+      saveCfg(); renderRecEditor(); closeOverlay("recWrap");
       toast("Recurring removed");
     };
 
@@ -2236,14 +2321,14 @@
     };
     $("btnPaste").onclick = function(){
       $("pasteText").value = "";
-      $("pasteWrap").hidden = false;
+      openOverlay("pasteWrap");
       setTimeout(function(){ $("pasteText").focus(); }, 120);
     };
-    $("pasteCancel").onclick = function(){ $("pasteWrap").hidden = true; };
+    $("pasteCancel").onclick = function(){ closeOverlay("pasteWrap"); };
     $("pasteRead").onclick = function(){
       var t = $("pasteText").value.trim();
       if (!t) { $("pasteText").focus(); return; }
-      $("pasteWrap").hidden = true;
+      closeOverlay("pasteWrap");
       closeMenu();
       applyShared(t);
     };
@@ -2326,19 +2411,29 @@
       if (e.target.classList && e.target.classList.contains("scrim")) {
         if (e.target.id === "formWrap") closeForm();
         else if (e.target.id === "menuWrap") closeMenu();
-        else e.target.hidden = true;
+        else closeOverlay(e.target.id);
       }
     });
+    window.addEventListener("popstate", function(){
+      if (ignorePop > 0) { ignorePop--; return; }
+      if (!overlayStack.length) return;
+      var id = overlayStack.pop();
+      var el = $(id);
+      if (el) el.hidden = true;
+    });
+
     document.addEventListener("keydown", function(e){
       if (e.key !== "Escape") return;
       if (!$("formWrap").hidden) closeForm();
-      else if (!$("ctxWrap").hidden) $("ctxWrap").hidden = true;
-      else if (!$("monthWrap").hidden) $("monthWrap").hidden = true;
+      else if (!$("ctxWrap").hidden) closeOverlay("ctxWrap");
+      else if (!$("monthWrap").hidden) closeOverlay("monthWrap");
+      else if (!$("recWrap").hidden) closeOverlay("recWrap");
+      else if (!$("pasteWrap").hidden) closeOverlay("pasteWrap");
       else if (!$("menuWrap").hidden) closeMenu();
     });
-    window.addEventListener("online", function(){ paintSync(); pullOnly(); });
+    window.addEventListener("online", function(){ paintSync(); if (gasUrl) autoSync(); });
     window.addEventListener("offline", paintSync);
-    document.addEventListener("visibilitychange", function(){ if (!document.hidden) pullOnly(); });
+    document.addEventListener("visibilitychange", function(){ if (!document.hidden && gasUrl) autoSync(); });
     window.addEventListener("storage", function(e){ if (e.key === K_TX || e.key === K_CFG) { load(); render(); } });
 
     window.addEventListener("beforeinstallprompt", function(e){ e.preventDefault(); deferredPrompt = e; paintInstall(); });
