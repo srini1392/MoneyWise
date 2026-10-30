@@ -206,7 +206,7 @@
   .sheet .row .k{font-size:.96875rem;flex:0 0 auto;color:var(--ink)}
   .amountbox{display:flex;align-items:baseline;justify-content:center;gap:3px;padding:4px 0 6px}
   .amountbox .cur{font-size:1.75rem;font-weight:600;color:var(--ink2);line-height:1.2}
-  .amountbox input{width:1ch;min-width:1.6ch;max-width:74%;font-size:2.875rem;font-weight:700;letter-spacing:-.03em;text-align:center;line-height:1.2}
+  .amountbox input{width:1ch;min-width:2.4ch;max-width:74%;font-size:2.875rem;font-weight:700;letter-spacing:-.03em;text-align:center;line-height:1.2}
   .amountbox input:focus,.amountbox input:focus-visible{outline:none}
   .amountbox input::placeholder{color:var(--ink3)}
   .calchint{text-align:center;font-size:.875rem;color:var(--tint);font-weight:600;height:18px;margin-bottom:2px}
@@ -288,6 +288,31 @@
   .toast .act{color:var(--tint);font-weight:600;font-size:.90625rem;flex:0 0 auto}
   @media (prefers-color-scheme: dark){ .toast{box-shadow:0 8px 30px rgba(0,0,0,.6)} }
 
+  /* ---------- large screens: two columns, dialog sheets ---------- */
+  @media (min-width: 1000px){
+    body{padding-bottom:48px}
+    .wrap{max-width:1180px;padding:0 32px}
+    .nav-inner{max-width:1180px;padding:0 32px;height:60px}
+    .searchbar{max-width:1180px;padding:0 32px 12px}
+    .tabbar{display:none}
+    .fab{right:36px;bottom:36px;width:56px;height:56px;font-size:1.75rem}
+    .layout{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:40px;align-items:start}
+    .monthnav{justify-content:flex-start;gap:10px;margin:24px 0 0}
+    .hero{padding-top:14px}
+    .hero .big{font-size:3.25rem}
+    .chips{margin:0;padding:2px 0 10px}
+    .donutwrap{width:268px;height:268px}
+    .donutcenter .v{font-size:1.75rem}
+    #viewStats .sechead:first-of-type{margin-top:22px}
+    .scrim{align-items:center;padding:24px}
+    .sheet .grab{display:none}
+    .toast{bottom:104px}
+    .sheet{max-width:560px;border-radius:22px;max-height:84vh;margin:0 auto;padding-bottom:24px}
+    .toast{left:auto;right:36px;bottom:36px;transform:translateY(14px);max-width:360px}
+    .toast.show{transform:none}
+  }
+  @media (min-width: 1000px) and (prefers-reduced-motion: reduce){ .sheet{animation:none} }
+
   @media (prefers-reduced-motion: reduce){
     .donut,.donut .seg,.trend .bar,.strip .d,.wd .b,.sheet{animation:none !important}
     .sw .row{transition:none}
@@ -318,6 +343,7 @@
     <button class="nav-arrow" id="nextMonth" aria-label="Next month">&#8250;</button>
   </div>
 
+  <div class="layout">
   <section id="viewHome">
     <div class="hero">
       <div class="big num" id="monthTotal">₹0</div>
@@ -367,6 +393,7 @@
 
     <div class="kpis" id="kpis"></div>
   </section>
+  </div>
 </div>
 
 <nav class="tabbar" role="tablist">
@@ -549,7 +576,7 @@
 (function(){
   "use strict";
 
-  var APP_VERSION = "1.1.0", APP_BUILT = "30 Oct 2026";
+  var APP_VERSION = "1.2.0", APP_BUILT = "30 Oct 2026";
   var K_TX = "spend.v2.tx", K_Q = "spend.v2.queue", K_GAS = "spend.v2.gas", K_CFG = "spend.v2.cfg";
   var K_MIGRATED = "spend.v2.migrated";
   var OLD_TX = "spend_tracker_tx_v1", OLD_GAS = "spend_tracker_gas_url";
@@ -1837,17 +1864,32 @@
   }
 
   /* ---------- wiring ---------- */
+  function isWide(){ return document.body.classList.contains("wide"); }
+  function applyLayout(){
+    var wide = window.matchMedia("(min-width: 1000px)").matches;
+    document.body.classList.toggle("wide", wide);
+    if (wide) {
+      $("viewHome").hidden = false;
+      $("viewStats").hidden = false;
+      $("fab").hidden = false;
+      $("searchBtn").hidden = false;
+      renderStats();
+    } else {
+      setTab(view);
+    }
+  }
   function setTab(name){
     view = name;
-    $("viewHome").hidden = name !== "home";
-    $("viewStats").hidden = name !== "stats";
+    var wide = isWide();
+    $("viewHome").hidden = wide ? false : name !== "home";
+    $("viewStats").hidden = wide ? false : name !== "stats";
     $("tabHome").classList.toggle("on", name === "home");
     $("tabStats").classList.toggle("on", name === "stats");
     $("tabHome").setAttribute("aria-selected", name === "home" ? "true" : "false");
     $("tabStats").setAttribute("aria-selected", name === "stats" ? "true" : "false");
-    $("fab").hidden = name !== "home";
-    $("searchBtn").hidden = name !== "home";
-    if (name === "stats") renderStats();
+    $("fab").hidden = wide ? false : name !== "home";
+    $("searchBtn").hidden = wide ? false : name !== "home";
+    if (name === "stats" || wide) renderStats();
     try { if (navigator.vibrate) navigator.vibrate(6); } catch (e) {}
   }
   function shiftMonth(delta){
@@ -1943,7 +1985,8 @@
       var cat = b.getAttribute("data-cat");
       if (activeCat === cat) {
         filter = cat; activeCat = null;
-        setTab("home"); render();
+        if (!isWide()) setTab("home");
+        render();
       } else { activeCat = cat; renderStats(); }
     });
     $("recs").addEventListener("click", function(e){
@@ -2031,7 +2074,7 @@
       if (!b || !b.getAttribute("data-day")) return;
       var k = b.getAttribute("data-day");
       dayFilter = dayFilter === k ? "" : k;
-      setTab("home");
+      if (!isWide()) setTab("home");
       render();
       if (dayFilter) $("list").scrollIntoView({ behavior: "smooth", block: "start" });
     });
@@ -2197,6 +2240,13 @@
       navigator.serviceWorker.register("./sw.js").catch(function(){});
     }
     if (/[?&]add=1/.test(location.search)) openForm(null);
+
+    applyLayout();
+    var resizeTimer = null;
+    window.addEventListener("resize", function(){
+      clearTimeout(resizeTimer);
+      resizeTimer = setTimeout(applyLayout, 120);
+    });
 
     detectOverlay();
     setTimeout(detectOverlay, 1200);
